@@ -22,9 +22,50 @@ systemd_unit_file(ceph_installer_unit_file_t)
 #
 # ceph_installer local policy
 #
+require {
+	type cert_t;
+	type device_t;
+	type devpts_t;
+	type krb5_conf_t;
+	type net_conf_t;
+	type passwd_file_t;
+	type ptmx_t;
+	type ssh_exec_t;
+	type ssh_port_t;
+	type tmp_t;
+	type unreserved_port_t;
+	class chr_file { read write ioctl open };
+	class dir { search create rmdir };
+	class file { execute read open getattr execute_no_trans };
+	class filesystem getattr;
+	class sock_file { create write getattr link unlink };
+	class tcp_socket name_bind;
+	class tcp_socket name_connect;
+	class udp_socket { create connect };
+	class unix_stream_socket connectto;
+}
+
 allow ceph_installer_t self:fifo_file rw_fifo_file_perms;
 allow ceph_installer_t self:unix_stream_socket create_stream_socket_perms;
 allow ceph_installer_t self:tcp_socket create_stream_socket_perms;
+allow ceph_installer_t ceph_installer_var_lib_t:sock_file write;
+allow ceph_installer_t ceph_installer_var_lib_t:sock_file { create unlink link };
+allow ceph_installer_t cert_t:dir search;
+allow ceph_installer_t cert_t:file { read getattr open };
+allow ceph_installer_t device_t:filesystem getattr;
+allow ceph_installer_t devpts_t:filesystem getattr;
+allow ceph_installer_t krb5_conf_t:file open;
+allow ceph_installer_t krb5_conf_t:file { read getattr };
+allow ceph_installer_t net_conf_t:file { read getattr open };
+allow ceph_installer_t passwd_file_t:file { read getattr open };
+allow ceph_installer_t ptmx_t:chr_file { read write ioctl open };
+allow ceph_installer_t self:udp_socket { create connect };
+allow ceph_installer_t self:unix_stream_socket connectto;
+allow ceph_installer_t ssh_exec_t:file { read execute open execute_no_trans };
+allow ceph_installer_t ssh_port_t:tcp_socket name_connect;
+allow ceph_installer_t tmp_t:dir { create rmdir };
+allow ceph_installer_t tmp_t:sock_file { write create unlink getattr };
+allow ceph_installer_t unreserved_port_t:tcp_socket name_bind;
 
 manage_dirs_pattern(ceph_installer_t, ceph_installer_var_lib_t, ceph_installer_var_lib_t)
 manage_files_pattern(ceph_installer_t, ceph_installer_var_lib_t, ceph_installer_var_lib_t)
