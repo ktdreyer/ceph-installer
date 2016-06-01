@@ -1,0 +1,19 @@
+Steps to debug issues with these selinux rules:
+
+1. Do a test run (setting up a cluster) with the ceph-installer package.
+
+2. Note whether this run succeeds or fails (do the services start up? does
+   ansible-playbook run? etc.)
+
+3. If there are failures, you can see them with:
+
+   sudo audit2allow -a -w
+
+4. Create a local custom policy to allow the failures:
+
+   sudo audit2allow -a -M installer && cat installer.te && sudo semodule -i installer.pp
+
+   ... and then retry the HTTP requests to the API, seeing what breaks next.
+   Keep repeating this command until you've built up a policy in the local
+   installer.te that you can incorporate into the ceph_installer.te file in
+   this directory.
