@@ -14,6 +14,11 @@ Source0:        https://github.com/ceph/%{srcname}/archive/%{commit}/%{srcname}-
 
 BuildArch:      noarch
 
+# get selinux policy version
+%{!?_selinux_policy_version: %global _selinux_policy_version %(sed -e 's,.*selinux-policy-\\([^/]*\\)/.*,\\1,' /usr/share/selinux/devel/policyhelp 2>/dev/null || echo 0.0.0)}
+%global selinux_types %(%{__awk} '/^#[[:space:]]*SELINUXTYPE=/,/^[^#]/ { if ($3 == "-") printf "%s ", $2 }' /etc/selinux/config 2>/dev/null)
+%global selinux_variants %([ -z "%{selinux_types}" ] && echo mls targeted || echo %{selinux_types})
+
 Requires: ansible
 Requires: ceph-ansible >= 1.0.5
 Requires: openssh
@@ -41,6 +46,15 @@ BuildRequires: python-pecan >= 1
 BuildRequires: python-pecan-notario
 BuildRequires: python-sqlalchemy
 
+# SELinux deps
+BuildRequires:  checkpolicy
+BuildRequires:  selinux-policy-devel
+BuildRequires:  /usr/share/selinux/devel/policyhelp
+BuildRequires:  hardlink
+Requires:       policycoreutils, libselinux-utils
+Requires(post): selinux-policy >= %{_selinux_policy_version}, policycoreutils
+Requires(postun): policycoreutils
+
 %description
 An HTTP API to provision and control the deployment process of Ceph clusters.
 
@@ -49,6 +63,14 @@ An HTTP API to provision and control the deployment process of Ceph clusters.
 
 %build
 %{__python} setup.py build
+
+cd selinux
+for selinuxvariant in %{selinux_variants}; do
+    make NAME=${selinuxvariant} -f /usr/share/selinux/devel/Makefile
+    mv ceph_installer.pp ceph_installer.pp.${selinuxvariant}
+    make NAME=${selinuxvariant} -f /usr/share/selinux/devel/Makefile clean
+done
+cd -
 
 %install
 %{__python} setup.py install -O1 --skip-build --root %{buildroot}
@@ -78,6 +100,14 @@ rst2man docs/source/man/index.rst > \
         %{buildroot}%{_mandir}/man8/ceph-installer.8
 gzip %{buildroot}%{_mandir}/man8/ceph-installer.8
 
+# Install SELinux policy
+for selinuxvariant in %{selinux_variants}; do
+    install -d %{buildroot}%{_datadir}/selinux/${selinuxvariant}
+    install -p -m 644 selinux/ceph_installer.pp.${selinuxvariant} \
+        %{buildroot}%{_datadir}/selinux/${selinuxvariant}/ceph_installer.pp
+done
+/usr/sbin/hardlink -cv %{buildroot}%{_datadir}/selinux
+
 %check
 py.test-%{python2_version} -v ceph_installer/tests
 
@@ -97,6 +127,13 @@ fi
 %systemd_post ceph-installer-celery.service
 systemctl start ceph-installer.service >/dev/null 2>&1 || :
 test -f %{_bindir}/firewall-cmd && firewall-cmd --reload --quiet || true
+# Load the policy
+for selinuxvariant in %{selinux_variants}; do
+    /usr/sbin/semodule -s ${selinuxvariant} -i \
+        %{_datadir}/selinux/${selinuxvariant}/ceph_installer.pp &> \
+        /dev/null || :
+done
+
 
 %preun
 %systemd_preun ceph-installer.service
@@ -122,5 +159,7 @@ test -f %{_bindir}/firewall-cmd && firewall-cmd --reload --quiet || true
 %dir %attr (-, ceph-installer, ceph-installer) %{_var}/lib/ceph-installer
 %dir %attr(0750, root, root) %{_prefix}/lib/firewalld/services
 %{_prefix}/lib/firewalld/services/ceph-installer.xml
+%doc selinux/*
+%{_datadir}/selinux/*/ceph_installer.pp
 
 %changelog
