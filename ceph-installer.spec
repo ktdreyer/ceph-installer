@@ -14,10 +14,21 @@ Source0:        https://github.com/ceph/%{srcname}/archive/%{commit}/%{srcname}-
 
 BuildArch:      noarch
 
+%global selinuxtype	targeted
+%global moduletype	services
+%global modulenames	ceph_installer
+
+# Usage: _format var format
+#   Expand 'modulenames' into various formats as needed
+#   Format must contain '$x' somewhere to do anything useful
+%global _format() export %1=""; for x in %{modulenames}; do %1+=%2; %1+=" "; done;
+
+# We do this in post install and post uninstall phases
+%global relabel_files() \
+	/sbin/restorecon -Rv %{_bindir}/gunicorn_pecan %{_bindir}/ceph-installer %{_bindir}/celery %{_prefix}/lib/systemd/system-preset/80-ceph-installer.preset %{_prefix}/lib/systemd/system/ceph-installer.* %{_prefix}/lib/systemd/system/ceph-installer-celery.* %{_var}/lib/ceph-installer &> /dev/null || :\
+
 # get selinux policy version
 %{!?_selinux_policy_version: %global _selinux_policy_version %(sed -e 's,.*selinux-policy-\\([^/]*\\)/.*,\\1,' /usr/share/selinux/devel/policyhelp 2>/dev/null || echo 0.0.0)}
-%global selinux_types %(%{__awk} '/^#[[:space:]]*SELINUXTYPE=/,/^[^#]/ { if ($3 == "-") printf "%s ", $2 }' /etc/selinux/config 2>/dev/null)
-%global selinux_variants %([ -z "%{selinux_types}" ] && echo mls targeted || echo %{selinux_types})
 
 Requires: ansible
 Requires: ceph-ansible >= 1.0.5
@@ -65,11 +76,7 @@ An HTTP API to provision and control the deployment process of Ceph clusters.
 %{__python} setup.py build
 
 cd selinux
-for selinuxvariant in %{selinux_variants}; do
-    make NAME=${selinuxvariant} -f /usr/share/selinux/devel/Makefile
-    mv ceph_installer.pp ceph_installer.pp.${selinuxvariant}
-    make NAME=${selinuxvariant} -f /usr/share/selinux/devel/Makefile clean
-done
+make NAME=${selinuxtype} -f /usr/share/selinux/devel/Makefile
 cd -
 
 %install
@@ -100,13 +107,18 @@ rst2man docs/source/man/index.rst > \
         %{buildroot}%{_mandir}/man8/ceph-installer.8
 gzip %{buildroot}%{_mandir}/man8/ceph-installer.8
 
-# Install SELinux policy
-for selinuxvariant in %{selinux_variants}; do
-    install -d %{buildroot}%{_datadir}/selinux/${selinuxvariant}
-    install -p -m 644 selinux/ceph_installer.pp.${selinuxvariant} \
-        %{buildroot}%{_datadir}/selinux/${selinuxvariant}/ceph_installer.pp
-done
-/usr/sbin/hardlink -cv %{buildroot}%{_datadir}/selinux
+# Install SELinux interfaces
+%_format INTERFACES $x.if
+install -d %{buildroot}%{_datadir}/selinux/devel/include/%{moduletype}
+install -p -m 644 selinux/$INTERFACES \
+	%{buildroot}%{_datadir}/selinux/devel/include/%{moduletype}
+
+# Install policy modules
+%_format MODULES $x.pp
+install -d %{buildroot}%{_datadir}/selinux/packages
+install -m 0644 selinux/$MODULES \
+	%{buildroot}%{_datadir}/selinux/packages
+
 
 %check
 py.test-%{python2_version} -v ceph_installer/tests
@@ -120,6 +132,13 @@ getent passwd ceph-installer >/dev/null || \
 exit 0
 
 %post
+%_format MODULES %{_datadir}/selinux/packages/$x.pp
+%{_sbindir}/semodule -n -s %{selinuxtype} -i $MODULES
+if %{_sbindir}/selinuxenabled ; then
+    %{_sbindir}/load_policy
+    %relabel_files
+fi
+
 if [ $1 -eq 1 ] ; then
    su - ceph-installer -c "/bin/pecan populate /etc/ceph-installer/config.py" &> /dev/null
 fi
@@ -127,12 +146,6 @@ fi
 %systemd_post ceph-installer-celery.service
 systemctl start ceph-installer.service >/dev/null 2>&1 || :
 test -f %{_bindir}/firewall-cmd && firewall-cmd --reload --quiet || true
-# Load the policy
-for selinuxvariant in %{selinux_variants}; do
-    /usr/sbin/semodule -s ${selinuxvariant} -i \
-        %{_datadir}/selinux/${selinuxvariant}/ceph_installer.pp &> \
-        /dev/null || :
-done
 
 
 %preun
@@ -142,6 +155,14 @@ done
 %postun
 %systemd_postun_with_restart ceph-installer.service
 %systemd_postun_with_restart ceph-installer-celery.service
+
+if [ $1 -eq 0 ]; then
+	%{_sbindir}/semodule -n -r %{modulenames} &> /dev/null || :
+	if %{_sbindir}/selinuxenabled ; then
+		%{_sbindir}/load_policy
+		%relabel_files
+	fi
+fi
 
 %files
 %doc README.rst
@@ -159,7 +180,8 @@ done
 %dir %attr (-, ceph-installer, ceph-installer) %{_var}/lib/ceph-installer
 %dir %attr(0750, root, root) %{_prefix}/lib/firewalld/services
 %{_prefix}/lib/firewalld/services/ceph-installer.xml
-%doc selinux/*
-%{_datadir}/selinux/*/ceph_installer.pp
+%{_datadir}/selinux/packages/*.pp
+%{_datadir}/selinux/devel/include/%{moduletype}/*.if
+
 
 %changelog
